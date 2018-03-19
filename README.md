@@ -4,6 +4,9 @@
 and can also generate loadings to be used with
 [ParOSol](https://github.com/reox/parosol-tu-wien) as demo/testing objects.
 
+Note that this uses the H5 format used by ParOSol! The ordering of dimensions is
+intended (by ParOSol) and not a bug!
+
 # Examples
 
 ## Hollow cylinder in compression (1)
@@ -15,7 +18,7 @@ basicshapes.py cylinder --file hollow_cylinder_w_loading3.h5 -D 31.32 -d 12.65 -
 ## Hollow cylinder in compression (2)
 
 ```
-/basicshapes.py cylinder -D 30 -d 20 -H 64 --voxeldim 0.5 --modulus 1000 --nu 0.3 --file hollow3.h5 --constraint-face south --loading-face north --loading -1000 --loading-dir 1 --extrusion-dir 1 --constraint-dim 1
+basicshapes.py cylinder -D 30 -d 20 -H 64 --voxeldim 0.5 --modulus 1000 --nu 0.3 --file hollow3.h5 --constraint-face south --loading-face north --loading -1000 --loading-dir 1 --extrusion-dir 1 --constraint-dim 1
 ```
 
 ## Beam in bending

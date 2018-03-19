@@ -53,10 +53,10 @@ basicshapes cylinder -H 200 -D 30 -d 20 \
                 --extrusion-dir 1 --bending-dir 0
 ```
 
-## Hollow cylinder with normal distribution fill as nu
+## Hollow cylinder with normal distribution fill as numpy file
 
 ```
-basicshapes --midplanes --file testbla.npy \
+basicshapes --midplanes --file testbla.npy --format numpy \
                 --fill-normal -D 30 -d 15 -H 30 \
                 --voxeldim 0.1 --modulus 1 --nu 0.5 \
                 --fill-mean 0.5 --fill-sd 0.2 cylinder

@@ -1,0 +1,897 @@
+#!/usr/bin/env python3
+from __future__ import print_function
+
+import h5py
+import sys
+import numpy as np
+from functools import reduce
+from collections import deque
+from argparse import ArgumentParser
+import math
+import itertools
+import operator
+import scipy.misc
+
+def get_normal_axis_on_face(face):
+    if face == "east" or face == "west":
+        return 0
+    if face == "north" or face == "south":
+        return 1
+    if face == "bottom" or face == "top":
+        return 2
+
+
+def iterate_face(face, shape):
+    """
+    Return all coordinates of the NODES on a face.
+    face is in:
+    * north
+    * east
+    * south
+    * west
+    * top
+    * bottom
+
+    Beware that this will return one element extra, which is not an Voxel but
+    the last node!
+
+    :param face: the face to iterate
+    :param shape: numpy shape (triple)
+    """
+    x, y, z = map(lambda x: range(x+1), shape)
+    dim_x, dim_y, dim_z = shape
+
+    # One face is always fixed
+    if face == "north":
+        y = [dim_y]
+    if face == "east":
+        x = [dim_x]
+    if face == "south":
+        y = [0]
+    if face == "west":
+        x = [0]
+    if face == "bottom":
+        z = [0]
+    if face == "top":
+        z = [dim_z]
+
+    return itertools.product(x, y, z)
+
+
+def iterate_face_elements(face, shape):
+    """
+    Return all coordinates of the elements on a face.
+    face is in:
+    * north
+    * east
+    * south
+    * west
+    * top
+    * bottom
+
+    :param face: the face to iterate
+    :param shape: numpy shape (triple)
+    """
+    x, y, z = map(range, shape)
+    dim_x, dim_y, dim_z = shape
+
+    # One face is always fixed
+    if face == "north":
+        y = [dim_y - 1]
+    if face == "east":
+        x = [dim_x - 1]
+    if face == "south":
+        y = [0]
+    if face == "west":
+        x = [0]
+    if face == "bottom":
+        z = [0]
+    if face == "top":
+        z = [dim_z - 1]
+
+    return itertools.product(x, y, z)
+
+
+def iterate_edge(edge, shape):
+    """
+    Return all coordinates of the NODES of an edge
+    edge is in:
+    * topnorth
+    * topeast
+    * topsouth
+    * topwest
+    * bottomnorth
+    * bottomeast
+    * bottomsouth
+    * bottomwest
+    * northwest
+    * northeast
+    * southeast
+    * southwest
+
+    Beware that this will return one element extra, which is not an Voxel but
+    the last node!
+
+    :param edge: the edge to iterate
+    :param shape: numpy shape (triple)
+    """
+    x, y, z = map(lambda x: range(x+1), shape)
+    dim_x, dim_y, dim_z = shape
+
+    # We decide first what the first item is
+    if edge.startswith("north"):
+        y = [dim_y]
+    if edge.startswith("south"):
+        y = [0]
+    if edge.startswith("bottom"):
+        z = [0]
+    if edge.startswith("top"):
+        z = [dim_z]
+
+    # Then the second part of the name
+    if edge.endswith("east"):
+        x = [dim_x]
+    if edge.endswith("west"):
+        x = [0]
+    if edge.endswith("north"):
+        y = [dim_y]
+    if edge.endswith("south"):
+        y = [0]
+
+    return itertools.product(x, y, z)
+
+
+def plotCircle(xm, ym, r, raster, val):
+    """
+    Bresenham Algorithm for Circles
+
+    :param xm: center of circle in x
+    :param ym: center of circle in y
+    :param r: radius of circle
+    :param raster: 2D ndarray to work on
+    :param val: value to set on circle
+    """
+    x = -r
+    y = 0
+    err = 2 - 2 * r
+    while True:
+        raster[xm-x, ym+y] = val
+        raster[xm-y, ym-x] = val
+        raster[xm+x, ym-y] = val
+        raster[xm+y, ym+x] = val
+        r = err
+
+        if (r <= y):
+            y += 1
+            err += y * 2 + 1  # e_xy+e_y < 0
+        if (r > x or err > y):
+            x += 1
+            err += x * 2 + 1  # e_xy+e_x > 0 or no 2nd y-step
+
+        if (x >= 0):
+            break
+
+def floodfill(x, y, raster, val):
+    """
+    Floodfill algorithm using 4-Neighborhood
+    This algorithm assumes that only values with 0 are replaced!
+
+    :param x: point in x to start
+    :param y: point in y to start
+    :param raster: 2D ndarray to work on
+    :param val: value to set
+    """
+
+    def should_fill(raster, x, y):
+        xm, ym = raster.shape
+        if not (0 <= x < xm):
+            return False
+        if not (0 <= y < ym):
+            return False
+
+        return raster[x, y] == 0
+
+    q = deque()
+
+    q.append((x, y))
+    while len(q) > 0:
+        x, y = q.pop()
+        raster[x, y] = val
+
+        if should_fill(raster, x, y + 1):
+            q.append((x, y + 1))
+        if should_fill(raster, x, y - 1):
+            q.append((x, y - 1))
+        if should_fill(raster, x + 1, y):
+            q.append((x + 1, y))
+        if should_fill(raster, x - 1, y):
+            q.append((x - 1, y))
+
+
+def write_midplanes(filepath, raster):
+    x, y, z = raster.shape
+
+    f = filepath.rsplit(".")[0]
+
+    scipy.misc.imsave(f + "_xy.png", raster[:, :, z // 2])
+    scipy.misc.imsave(f + "_xz.png", raster[:, y // 2, :])
+    scipy.misc.imsave(f + "_yz.png", raster[x // 2, :, :])
+
+
+def write_numpy(filepath, raster, pr=None, voxeldim=None, loadcase=None, displacements=None):
+    """
+    This function does not support pr, voxeldim, loadcase and displacements!!!
+    """
+    np.save(filepath, raster)
+
+
+def write_h5(filepath, raster, pr, voxeldim, loadcase, displacements):
+    """
+
+    :param loadcase: Tuple of coordinates and values or None
+    :param displacements: Tuple of coordinates and values or None
+
+    """
+    with h5py.File(filepath, 'w') as f:
+        grp = f.create_group("Image_Data")
+        # The file should have the following items:
+
+        # Image
+        #     H5T_IEEE_F32LE
+        # 3D Image Data
+        # The values are the Young's modulus in GPa.
+        #
+        # Swap the axis, as we are required to write in ZYX
+        grp.create_dataset("Image", data=np.swapaxes(raster, 0, 2))
+
+        # Another speciality: The Image is voxel based, but the boundary
+        # conditions are not. They use actual Node coordinates!
+        if displacements:
+            # Write Displacements / Fixed Nodes if available
+            coordinates, values = displacements
+
+            assert coordinates.shape[1] == 4, "Coordinates are not a four-tuple"
+
+            # Convert to voxeldim coordinate
+            #coordinates[:, 0:3] = coordinates[:, 0:3] * voxeldim
+
+            # We need to swap the coordinates to ZYX:
+            coordinates[:,[2,0]] = coordinates[:,[0,2]]
+
+            grp.create_dataset("Fixed_Displacement_Coordinates", data=coordinates)
+            grp.create_dataset("Fixed_Displacement_Values", data=values)
+
+        if loadcase:
+            coordinates, values = loadcase
+            assert coordinates.shape[1] == 4, "Coordinates are not a four-tuple"
+            #coordinates[:, 0:3] = coordinates[:, 0:3] * voxeldim
+            coordinates[:,[2,0]] = coordinates[:,[0,2]]
+            grp.create_dataset("Loaded_Nodes_Coordinates", data=coordinates)
+            grp.create_dataset("Loaded_Nodes_Values", data=values)
+
+        # One value, dimensionless
+        poisson = grp.create_dataset("Poisons_ratio", (1, ), dtype=np.float64)
+        poisson[0] = pr
+
+        # One value, mm
+        voxelsize = grp.create_dataset("Voxelsize", (1, ), dtype=np.float64)
+        voxelsize[0] = voxeldim
+
+
+def get_elements_of_node(x, y, z, raster):
+    """
+    yield all elements that are connected to a node, if in raster
+
+    :param x: coordinate x of node
+    :param y: coordinate y of node
+    :param z: coordinate z of node
+    :param raster: elements to check if they are contained
+
+    Each node is connected to maximal eight elements. If the node is at the
+    border, it will be connected to less elements. We will only return IDs that
+    are in the raster.
+    """
+    for c in itertools.product([x - 1, x], [y - 1, y], [z - 1, z]):
+        if all(map(lambda a: a[0] < a[1], zip(c, raster.shape))):
+            yield c
+
+
+def get_nodes_of_element(x, y, z, face=None):
+    """
+    Yields all node coordinates of an element
+
+    :param x: coordinate x of element
+    :param y: coordinate y of element
+    :param z: coordinate z of element
+    :param face: iterate only the given face (default: None -> all nodes)
+
+    The element coordinate system and the node coordinate system are not the
+    same!
+    """
+    e_x, e_y, e_z = [x, x + 1], [y, y + 1], [z, z + 1]
+
+    if face == "north":
+        e_y = [y + 1]
+    if face == "east":
+        e_x = [x + 1]
+    if face == "south":
+        e_y = [y]
+    if face == "west":
+        e_x = [x]
+    if face == "bottom":
+        e_z = [z]
+    if face == "top":
+        e_z = [z + 1]
+
+    return itertools.product(e_x, e_y, e_z)
+
+
+def generate_fixed(raster, face, dimensions):
+    elem = []
+
+    # We need to make sure, that the element has a value!
+    # Therefor we have another function that gives us all interessting Element
+    # indices to check...
+
+    for x, y, z in iterate_face(face, raster.shape):
+        if any(map(lambda c: raster[c] > 0.0, get_elements_of_node(x, y, z, raster))):
+            for d in dimensions:
+                elem.append((x, y, z, d))
+
+    coord = np.array(elem, dtype=np.uint16)
+
+    return coord, np.zeros(coord.shape[0], dtype=np.float32)
+
+
+def generate_loaded_face(raster, face, loading, voxeldim):
+    """
+    Generate an area load on the given face
+
+    This works only for loadings that are normal to the face!
+    i.e. compressive or tensile forces on the whole area.
+    """
+    # Get all elements on the face and all nodes of the elements. then get the
+    # nodes that are actually on this surface.
+
+    # check that the direction is perpendicular to the face
+    direction = get_normal_axis_on_face(face)
+
+    voxelarea = voxeldim * voxeldim
+
+    elem_nodes = []
+    for element in iterate_face_elements(face, raster.shape):
+        if raster[element] > 0.0:
+            for n in get_nodes_of_element(*element):
+                elem_nodes.append(n)
+
+    w = loading / (voxelarea * (len(elem_nodes) / 8.0))
+
+    nodes = []
+    nodes_face = list(iterate_face(face, raster.shape))
+    for c in elem_nodes:
+        if c in nodes_face:
+            x, y, z = c
+            nodes.append((x, y, z, direction))
+
+    nvalues = dict()
+    # Each node has exactly 1/4 of the total area of the quad mesh.
+    # Nodes that are connected to more elements will sum up.
+    for n in nodes:
+        if n in nvalues:
+            nvalues[n] += 0.25 * w * voxelarea
+        else:
+            nvalues[n] = 0.25 * w * voxelarea
+
+    coord = np.array(list(nvalues.keys()), dtype=np.uint16)
+    values = np.array(list(nvalues.values()), dtype=np.float32)
+
+    return coord, values
+
+
+def generate_loaded_face_bend(raster, face, loading, voxeldim, bendingdir):
+    """
+    Generate the bending stresses on a face
+    """
+    # Get all elements on the face and all nodes of the elements. then get the
+    # nodes that are actually on this surface.
+
+    # check that the direction is perpendicular to the face
+    direction = get_normal_axis_on_face(face)
+
+    assert bendingdir != direction, "Bending must not be the normal axis!"
+
+    voxelarea = voxeldim * voxeldim
+
+    # For simplicity, we have this case here:
+    #
+    # z   /+--------------------+      \
+    # ^   /|                    |   *  | M_y
+    # |   /+--------------------+      v
+    # +--> x
+    #
+    # and seen from the face:
+    #
+    #
+    #      +-------+
+    #      |       |
+    #  z   |nnnnnnn|
+    #  ^   |       |
+    #  |   +-------+
+    #  +--> y
+    #
+    # The part above `n` will be in tension, the part below in compression.
+    #
+    # We assume two things here:
+    # 1) the face is symmetrical around y and z
+    # 2) the moment is at the middle
+    #
+    # Therefore, we get the following formular:
+    # sigma(x, y, z) = (M_y(x) / I_y(x)) * z - (M_z(x) / I_z(x)) * y
+    #
+    # But, we only have a single Moment, as it is either M_z or M_y!
+    # We need to define how large the Moment is, e.g. how far away from the
+    # face the Force works.
+    # i.e. for the sketched loadcase, with a moment around the y axis (force in
+    # z direction), the formular is:
+    # sigma(x, z) = (M_y(x) / I_y) * z
+    # M_y(x) = F * x    (in vector terms the * is a cross product)
+    # I_y = Integral over A: z**2 dA
+    # As we assume constant cross section, I_y does not depend on x.
+
+    elem = np.array([x for x in iterate_face_elements(face, raster.shape) if raster[x] > 0.0])
+    # Normalize to center
+    max_value = np.amax(elem, 0) / 2.0  # we need this later
+
+    elem = (elem - max_value) * voxeldim
+
+    dirs = list(set([0,1,2]) - set([direction]))
+
+    # Second Moment of Area
+    smoa = dict()
+
+    # Using parallel axis theorem
+    # I = I_sq + c**2 * A
+    I_sq = (voxeldim ** 4.0) / 12.0
+    smoa[dirs[0]] = sum(I_sq + (elem[:,dirs[1]] ** 2 * voxelarea))  # Moment for direction 0
+    smoa[dirs[1]] = sum(I_sq + (elem[:,dirs[0]] ** 2 * voxelarea))  # Moment for direction 1
+    # The results are exact for squares but a little bit off for the cylindrical
+    # shapes...
+    # But this is very clear, as we miss things due to the Bresenham algorithm.
+    #
+    # Example: Actual Solution for the cylinder: 
+    # pi/4 * (15**4 - 10**4) = 31906,8
+    # But we get 37848.0...
+    #
+    # For rectangles the solution is the same (ie h*b**3/12)
+
+    print("Flaechentraegheitsmomente", dirs[0], "-->", smoa[dirs[0]], ";", dirs[1], "-->", smoa[dirs[1]])
+
+    # Assume that the face we have is in the middle
+    M = loading * (raster.shape[direction] * voxeldim)
+
+    print("Moment: ", M)
+
+    # At last we need to decide on which side we are.
+    # Again, consider the example from above:
+    #
+    #    +--|--+
+    #    |  |  |
+    # ------+------
+    #    |  |  |
+    #    +--|--+
+    #
+    # As we shifted the coordinate system to the middle, we need to decide if
+    # which of the sides is in compression and which is in tension.
+
+    # Mathematical positive rotation
+    # If you give the loading as negative number, the rotation will be negative.
+    if ((direction + 1) % 3) != bendingdir:
+        sign = 1
+    else:
+        sign = -1
+
+    # Maximum stresses are given by:
+    # If M_y --> I_y and z
+    # If M_z --> I_z and x
+    # If M_x --> I_x and y
+    #
+    # Variable direction: (direction in which the stress varies)
+    vardir, = set([0, 1, 2]) - set([direction]) - set([bendingdir])
+
+    # Ensure that the axis are different!
+    assert vardir != bendingdir and bendingdir != direction and vardir != direction, "vardir, bendingdir and direction must be canocial different!"
+
+    print("Maximum stress: +-", sign * M/smoa[bendingdir] * (raster.shape[vardir] * voxeldim), "MPa")
+
+    # At last, we need to distribute the loading on the face...
+    # First, we distribute the stresses onto the element surfaces.
+    # Then, each node gets 1/4 of the force.
+
+    # To distribute the loads, we iterate over all elements are give each
+    # element the stress. Then we distribute the stress over the elements.
+    # In theory we could also distribute the forces correctly over the elements!
+
+    node_loadings = []
+
+    for e in iterate_face_elements(face, raster.shape):
+        if raster[e] > 0.0:
+            # Element coordinate change
+            c = (np.array(e) - max_value) * voxeldim
+            for node in get_nodes_of_element(*e, face=face):
+                node_loadings.append((node + (direction, ), 0.25 * sign * M / smoa[bendingdir] * c[vardir]))
+
+    print("normal", direction, "bendingdir", bendingdir, "variable", vardir)
+
+    node_loadings_d = dict()
+    for n, v in node_loadings:
+        if n in node_loadings_d:
+            node_loadings_d[n] += v
+        else:
+            node_loadings_d[n] = v
+
+    coord = np.array(list(node_loadings_d.keys()), dtype=np.uint16)
+    values = np.array(list(node_loadings_d.values()), dtype=np.float32)
+
+    return coord, values
+
+
+def generate_loaded_edge(raster, edge, direction, loading, voxeldim):
+    """
+    Create a loading of an edge.
+
+    The loading is distributed over all nodes of the edge using the schema
+    described in G. Lakshmi Narasaiah, Finite Element Analysis p207
+
+    As we only use 8-Node Elements, i.e. two nodes per edge, this is rather
+    straight forward.
+    """
+    elem = []
+    for x, y, z in iterate_edge(edge, raster.shape):
+        if any(map(lambda c: raster[c] > 0.0, get_elements_of_node(x, y, z, raster))):
+            elem.append((x, y, z, direction))
+
+    # we collected the elements on that edge
+    # Calculate the total length
+    total_length = voxeldim * len(elem)
+
+    w = loading / total_length
+    # We know, that in our simplified world, the egdes are always aligned in one
+    # principle direction. Therefore we can take all the coordinates and check
+    # in which direction this edge lies. Then we can sort the coordinates by
+    # this axis and the first and last element get length L/2, where all other
+    # elements are 2*L/2, as they are contained by two elements.
+    axis = [a[0] for a in zip([0, 1, 2], map(lambda x: len(set(x)) != 1, (zip(*elem)))) if a[1]]
+    assert len(axis) == 1, "There is not a single variable axis but {}".format(len(axis))
+
+    axis = axis[0]
+    elem = sorted(elem, key=operator.itemgetter(axis))
+
+    coord = np.array(elem, dtype=np.uint16)
+
+    values = np.full(coord.shape[0], w * voxeldim, dtype=np.float32)
+    # change for first and last element
+    values[[0, -1]] *= 0.5
+
+    return coord, values
+
+
+def geom_rectangle(L, B, H, voxeldim=1.0, val=128):
+    """
+    Create rectangle box
+
+    :param L: length in x
+    :param B: width in y
+    :param H: height in z
+    :param voxeldim: Dimension of a single voxel
+    :param val: Value of cylinder voxels (default: 128)
+    """
+    mult = 1.0 / voxeldim
+
+    # Require integer grid
+    assert mult == int(mult)
+
+    L = int(L * mult)
+    B = int(B * mult)
+    H = int(H * mult)
+
+    raster = np.full((L, B, H), val, np.float32)
+
+    print("Number of Voxels: {}".format(L*B*H))
+
+    return raster
+
+
+def geom_cylinder(D, d, h, voxeldim=1.0, val=128, has_baseplate=True,
+        has_topplate=True, extrusion_dir=2):
+    """
+    Create a hollow cylinder geometry
+
+    :param D: outer diameter
+    :param d: inner diameter, if 0 the cylinder will not be hollow but completly filled.
+    :param h: height of cylinder
+    :param voxeldim: Dimension of a single voxel
+    :param val: Value of cylinder voxels (default: 128)
+    :param has_baseplate: Create a plate with value 255 on the bottom
+    :param has_topplate: Create a plate with value 255 on the top
+    :param extrusion_dir: The direction in which H goes (default 2 = z)
+
+    :returns: numpy.ndarray
+
+    """
+    mult = 1.0 / voxeldim
+
+    assert D > 0, "D is negative and must not be zero!"
+    assert d >= 0, "d is negative"
+    assert h > 0, "h is negative and must not be zero!"
+
+    # Require integer grid
+    assert mult == int(mult)
+
+    D = int(D * mult)
+    d = int(d * mult)
+    h = int(h * mult)
+
+    # Require odd size for symmetry
+    if D % 2 == 0:
+        D += 1
+    if d > 0.0 and d % 2 == 0:
+        d += 1
+
+    # size of image (will be square)
+    r = D
+
+    print("D: {}, d: {}, h: {}, R: {}, r: {}, A: {}".format(D,
+                                                            d,
+                                                            h,
+                                                            D // 2,
+                                                            d // 2,
+                                                            r))
+
+    print("Number of Voxels: {}".format(r * r * h))
+
+    raster = np.zeros((r, r), np.float32)
+    baseplate = np.full((r, r), 255, np.float32)
+
+    plotCircle(r // 2, r // 2, D // 2, raster, val)
+    if d > 0.0:
+        plotCircle(r // 2, r // 2, d // 2, raster, val)
+    floodfill(r // 2, 2, raster, val)
+
+    # "extrude" in 3D:
+    raster = np.stack([raster for _ in range(h)], axis=2)
+
+    # Add baseplate
+    if has_baseplate:
+        raster = np.insert(raster, 0, baseplate, axis=2)
+
+    # Add topplate
+    if has_topplate:
+        raster = np.insert(raster, h+1, baseplate, axis=2)
+
+    if extrusion_dir == 0:
+        # rotate 90 in XZ plane --> H will be in X direction
+        raster = np.rot90(raster, k=1, axes=(0, 2))
+    elif extrusion_dir == 1:
+        # rotate in YZ plane --> H will be in Y direction
+        raster = np.rot90(raster, k=1, axes=(1, 2))
+
+    return raster
+
+
+def fill_normal(raster, mean, sd, old_value):
+    """
+    Fill a raster using a normal distribution.
+    Values are set to 0 for occurences of values <0.
+
+    :param raster: numpy array
+    :param mean: mean value of distribution
+    :param sd: standard deviation of distribution
+    :param old_value: value that counts as material
+    """
+
+    norm = np.random.normal(loc=mean, scale=sd, size=raster.shape)
+    norm[norm < 0] = 0
+
+    raster = (raster / 5.0) * norm
+
+    return raster
+
+
+if __name__ == "__main__":
+    ## This code will create a real simple load case.
+    # All elements on the bottom will be fixed in all three directions.
+    # All elements on top will be loaded with the same value in z direction.
+    # Just switch the loading to positive for tensile loadings...
+    #
+    #
+    # BEWARE:
+    # Paraview reads the data differently than we write it, and there is
+    # probably no way around.
+    # See: https://www.mail-archive.com/paraview@paraview.org/msg23265.html
+    # https://public.kitware.com/pipermail/paraview/2009-May/012278.html
+    # We write the data as a dataset with (x,y,z). Also all other vectors are
+    # organzied like this in the hdf5 file.
+    # But Paraview will read the data ZYX!
+    # Thus, the axis are swapped in paraview!!!
+
+    formats = {"H5": write_h5, "numpy": write_numpy}
+
+    p = ArgumentParser(description="Create geometric primitives for ParOSol")
+    p.add_argument("-f", "--file", type=str, help="Output file name")
+    p.add_argument("body", type=str, help="specify the body to use. Use one of"
+            "{}".format(", ".join(["box", "cylinder"])))
+
+    p.add_argument("-D", type=float, help="Outer diameter [mm]")
+    p.add_argument("-d", type=float, help="inner diameter [mm]", default=0.0)
+    p.add_argument("-L", type=float, help="length [mm]")
+    p.add_argument("-B", type=float, help="width [mm]")
+    p.add_argument("-H", type=float, help="Height [mm]")
+    p.add_argument("--extrusion-dir", default=2, type=int, help="Direction of extrusion (ie direction of H) (Default: 2 = z)")
+    p.add_argument("--voxeldim", default=1.0, type=float, help="Size of Voxel [mm]")
+    p.add_argument("--modulus", type=float, help="E-Modulus of Material [MPa]")
+    p.add_argument("--fill-normal", default=False, action="store_true",
+            help="Fill the Structure with a normal distribution using"
+            "parameters --fill-mean and --fill-sd. Values are clipped at 0.")
+    p.add_argument("--fill-mean", default=1.0, type=float, help="Mean value of normal"
+            "distribution, only used if --fill-normal is set.")
+    p.add_argument("--fill-sd", default=1.0, type=float, help="Standard"
+            "Deviation of normal distribution, only used of --fill-normal is set")
+    p.add_argument("--nu", type=float, help="Poisson Ratio")
+    p.add_argument("--loading", type=float, help="Loading of Topplate [Newton]")
+    p.add_argument("--base", default=False, action="store_true", help="Object should have baseplate")
+    p.add_argument("--top", default=False, action="store_true", help="Object should have topplate")
+    p.add_argument("--loading-face", type=str, help="face to load")
+    p.add_argument("--constraint-face", type=str, help="face to constrain")
+    p.add_argument("--constraint-dim", type=int, nargs='+', default=[0,1,2], help="Dimensions to constrain (0, 1, 2)")
+    p.add_argument("--loading-bend", type=str, help="An face to bend")
+    p.add_argument("--loading-edge", type=str, help="An edge to load")
+    p.add_argument("--loading-dir", type=int, help="Loading direction (0, 1, 2)")
+    p.add_argument("--bending-dir", type=int, help="Axis for Bending moment direction (0, 1, 2). We assume positive mathematical rotation, therefor the moment will be around this axis in positive direction.")
+    p.add_argument("--midplanes", default=False, action="store_true",
+            help="Store midplanes as png of the generated image")
+    p.add_argument("--format", default="H5", help="Set output format, valid"
+            "values: {}".format(", ".join(formats.keys())))
+
+
+
+    # TODO we like to give a loadcases / fixations multiple times
+    # TODO implement displacements
+    # TODO implement elipsis
+
+    args = p.parse_args()
+
+    if args.format not in formats:
+        print("Invalid Format {}!".format(args.format))
+        sys.exit(1)
+
+    if args.file is None:
+        print("Need to give --file!", file=sys.stderr)
+        sys.exit(1)
+
+    if args.body == "cylinder":
+        try:
+            sum([args.D, args.d, args.H, args.voxeldim, args.modulus, args.nu])
+        except TypeError:
+            print("Need to give D, d, H, voxeldim, modulus, nu", file=sys.stderr)
+            sys.exit(1)
+    elif args.body == "box":
+        try:
+            sum([args.L, args.B, args.H, args.voxeldim, args.modulus, args.nu])
+        except TypeError:
+            print("Need to give L, B, H, voxeldim, modulus, nu", file=sys.stderr)
+            sys.exit(1)
+    elif args.body is None:
+        print("Please specify the type of body!", file=sys.stderr)
+        sys.exit(1)
+    else:
+        print("This type of body {} is not known!".format(args.body), file=sys.stderr)
+        sys.exit(1)
+
+
+    if args.nu < 0.0 or args.nu > 0.5:
+        print("Poisson ratio must be between 0 and 0.5", file=stderr)
+        sys.exit(1)
+
+    # How we name elements in space:
+    #                    North
+    #
+    #                +-----------+
+    #               /           /|
+    #              /  Top      / |
+    #             /           /  |
+    #            /           /   |
+    #           +-----------+    |
+    #           |           |    +
+    #           |           |   /    East
+    #   West    |   South   |  /
+    #           |           | /
+    #           |           |/
+    #           +-----------+
+    #   z
+    #   ^          Bottom
+    #   |   y
+    #   | /
+    #   |/
+    #   +------> x
+    #
+    # i.e. the face with pos. y as normal vector is north
+    # and the face with negative z as normal vector is bottom.
+    faces = ["north", "east", "south", "west", "top", "bottom"]
+
+    if args.loading_face and args.loading_edge:
+        print("Face and Edge loading is not supported at the same time",
+                file=sys.stderr)
+        sys.exit(1)
+
+    if args.loading_face and args.loading_face not in faces:
+        print("Loading face must be in {}".format(", ".join(faces)))
+        sys.exit(1)
+
+    if args.constraint_face and args.constraint_face not in faces:
+        print("Constraint face must be in {}".format(", ".join(faces)))
+        sys.exit(1)
+
+    # Edges are called in a similar way, where the name has the following
+    # convetion:
+    # Bottom/Top > North/South > West/East
+    edges = ["topnorth", "topeast", "topsouth", "topwest",
+             "bottomnorth", "bottomeast", "bottomsouth", "bottomwest",
+             "northwest", "northeast",
+             "southeast", "southwest"]
+
+    if args.loading_edge and args.loading_edge not in edges:
+        print("Loading Side must be in {}".format(", ".join(edges)))
+        sys.exit(1)
+
+    # Also the nodes are called in a similar way, but the naming schema looks
+    # like this:
+    # North/South + East/West + Bottom/Top
+    # e.g. NEB or SWT would be valid names
+
+
+
+    raster = None
+
+    if args.body == "cylinder":
+        raster = geom_cylinder(args.D, args.d, args.H, args.voxeldim, val=args.modulus,
+                has_topplate=args.top, has_baseplate=args.base, extrusion_dir=args.extrusion_dir)
+    elif args.body == "box":
+        raster = geom_rectangle(args.L, args.B, args.H, args.voxeldim, val=args.modulus)
+
+    print("Created a image with dimension: {} - {} voxels".format(raster.shape,
+        reduce(lambda x, y: x * y, raster.shape)))
+    print("Image has {} non-zero elements".format(np.count_nonzero(raster)))
+
+    loadcase = None
+    displacements = None
+
+    if args.loading_face:
+        loadcase = generate_loaded_face(raster, args.loading_face, args.loading, args.voxeldim)
+
+    if args.loading_bend:
+        loadcase = generate_loaded_face_bend(raster, args.loading_bend,
+                args.loading, args.voxeldim, args.bending_dir)
+
+    if args.loading_edge:
+        loadcase = generate_loaded_edge(raster, args.loading_edge,
+                args.loading_dir, args.loading, args.voxeldim)
+
+    if args.constraint_face:
+        displacements = generate_fixed(raster, args.constraint_face,
+                args.constraint_dim)
+
+
+    # If normal fill is set, change the raster accordingly
+    if args.fill_normal:
+        raster = fill_normal(raster, args.fill_mean, args.fill_sd, args.modulus)
+
+    # Get midplane images
+    if args.midplanes:
+        write_midplanes(args.file, raster)
+
+    if args.format == "numpy":
+        print("Note that the numpy output does not support displacements! Only"
+              "the image will be exported!")
+
+    formats[args.format](args.file, raster, args.nu, args.voxeldim, loadcase, displacements)
+

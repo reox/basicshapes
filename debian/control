@@ -1,0 +1,14 @@
+Source: basicshapes
+Section: python
+Priority: optional
+Maintainer: Sebastian Bachmann
+Build-Depends: debhelper (>= 10), python3
+Standards-Version: 3.9.2
+X-Python-Version: >= 3.5
+
+Package: basicshapes
+Architecture: all
+Section: python
+Depends: ${python3:Depends}, ${misc:Depends}
+Description: Generate basic shapes for the use with ParOSol
+ or other voxel based FE solvers.

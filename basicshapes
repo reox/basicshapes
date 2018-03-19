@@ -692,7 +692,7 @@ def fill_normal(raster, mean, sd, old_value):
     norm = np.random.normal(loc=mean, scale=sd, size=raster.shape)
     norm[norm < 0] = 0
 
-    raster = (raster / 5.0) * norm
+    raster = (raster / old_value) * norm
 
     return raster
 

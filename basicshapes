@@ -682,6 +682,8 @@ def geom_cylinder(D, d, h, voxeldim=1.0, val=128, has_baseplate=True,
 def fill_noise(raster, freq=16, octaves=1):
     """
     Fill all nonzero values of the raster by 3D Perlin noise
+    This will use the tiling variant and repeat is exactly the raster size.
+    This means that for example a box can be tiled infinitely.
 
     Return values are floats [0, 1].
     """
@@ -695,7 +697,10 @@ def fill_noise(raster, freq=16, octaves=1):
                     raster[x, y, z] = (pnoise3(x / freq,
                                                y / freq,
                                                z / freq,
-                                               octaves=octaves) + 1) * 0.5
+                                               octaves=octaves,
+                                               repeatx=mx,
+                                               repeaty=my,
+                                               repeatz=mz) + 1) * 0.5
 
     return raster
 

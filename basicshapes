@@ -692,10 +692,10 @@ def fill_noise(raster, freq=16, octaves=1):
         for y in range(my):
             for z in range(mz):
                 if raster[x, y, z] > 0:
-                    raster[x, y, z] = pnoise3(x / freq,
-                                              y / freq,
-                                              z / freq,
-                                              octaves=octaves) * 0.5 + 1
+                    raster[x, y, z] = (pnoise3(x / freq,
+                                               y / freq,
+                                               z / freq,
+                                               octaves=octaves) + 1) * 0.5
 
     return raster
 

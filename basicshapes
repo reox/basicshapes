@@ -679,7 +679,7 @@ def geom_cylinder(D, d, h, voxeldim=1.0, val=128, has_baseplate=True,
     return raster
 
 
-def fill_noise(raster, freq=16, octvaes=1):
+def fill_noise(raster, freq=16, octaves=1):
     """
     Fill all nonzero values of the raster by 3D Perlin noise
 

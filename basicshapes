@@ -11,6 +11,7 @@ import math
 import itertools
 import operator
 import scipy.misc
+from noise import pnoise3
 
 def get_normal_axis_on_face(face):
     if face == "east" or face == "west":
@@ -678,6 +679,27 @@ def geom_cylinder(D, d, h, voxeldim=1.0, val=128, has_baseplate=True,
     return raster
 
 
+def fill_noise(raster, freq=16, octvaes=1):
+    """
+    Fill all nonzero values of the raster by 3D Perlin noise
+
+    Return values are floats [0, 1].
+    """
+
+    mx, my, mz = raster.shape
+
+    for x in range(mx):
+        for y in range(my):
+            for z in range(mz):
+                if raster[x, y, z] > 0:
+                    raster[x, y, z] = pnoise3(x / freq,
+                                              y / freq,
+                                              z / freq,
+                                              octaves=octaves) * 0.5 + 1
+
+    return raster
+
+
 def fill_normal(raster, mean, sd, old_value):
     """
     Fill a raster using a normal distribution.
@@ -729,9 +751,12 @@ if __name__ == "__main__":
     p.add_argument("--extrusion-dir", default=2, type=int, help="Direction of extrusion (ie direction of H) (Default: 2 = z)")
     p.add_argument("--voxeldim", default=1.0, type=float, help="Size of Voxel [mm]")
     p.add_argument("--modulus", type=float, help="E-Modulus of Material [MPa]")
-    p.add_argument("--fill-normal", default=False, action="store_true",
+    fillers = p.add_mutually_exclusive_group()
+    fillers.add_argument("--fill-normal", default=False, action="store_true",
             help="Fill the Structure with a normal distribution using"
             "parameters --fill-mean and --fill-sd. Values are clipped at 0.")
+    fillers.add_argument("--fill-noise", default=False, action="store_true",
+            help="Fill the volume by using 3D Perlin noise")
     p.add_argument("--fill-mean", default=1.0, type=float, help="Mean value of normal"
             "distribution, only used if --fill-normal is set.")
     p.add_argument("--fill-sd", default=1.0, type=float, help="Standard"
@@ -884,6 +909,8 @@ if __name__ == "__main__":
     # If normal fill is set, change the raster accordingly
     if args.fill_normal:
         raster = fill_normal(raster, args.fill_mean, args.fill_sd, args.modulus)
+    elif args.fill_noise:
+        raster = fill_noise(raster)
 
     # Get midplane images
     if args.midplanes:

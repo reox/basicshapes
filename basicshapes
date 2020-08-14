@@ -11,7 +11,11 @@ import math
 import itertools
 import operator
 import scipy.misc
-from noise import pnoise3
+try:
+    from noise import pnoise3
+    has_noise = True
+except ImportError:
+    has_noise = False
 
 def get_normal_axis_on_face(face):
     if face == "east" or face == "west":
@@ -459,7 +463,7 @@ def generate_loaded_face_bend(raster, face, loading, voxeldim, bendingdir):
     # shapes...
     # But this is very clear, as we miss things due to the Bresenham algorithm.
     #
-    # Example: Actual Solution for the cylinder: 
+    # Example: Actual Solution for the cylinder:
     # pi/4 * (15**4 - 10**4) = 31906,8
     # But we get 37848.0...
     #
@@ -687,6 +691,8 @@ def fill_noise(raster, freq=16, octaves=1):
 
     Return values are floats [0, 1].
     """
+    if not has_noise:
+        raise ValueError("No Noise module found.")
 
     mx, my, mz = raster.shape
 
@@ -760,8 +766,9 @@ if __name__ == "__main__":
     fillers.add_argument("--fill-normal", default=False, action="store_true",
             help="Fill the Structure with a normal distribution using"
             "parameters --fill-mean and --fill-sd. Values are clipped at 0.")
-    fillers.add_argument("--fill-noise", default=False, action="store_true",
-            help="Fill the volume by using 3D Perlin noise")
+    if has_noise:
+        fillers.add_argument("--fill-noise", default=False, action="store_true",
+                help="Fill the volume by using 3D Perlin noise")
     p.add_argument("--fill-mean", default=1.0, type=float, help="Mean value of normal"
             "distribution, only used if --fill-normal is set.")
     p.add_argument("--fill-sd", default=1.0, type=float, help="Standard"
@@ -885,7 +892,7 @@ if __name__ == "__main__":
     if args.body == "cylinder":
         raster = geom_cylinder(args.D, args.d, args.H, args.voxeldim, val=args.modulus,
                 has_topplate=args.top, has_baseplate=args.base, extrusion_dir=args.extrusion_dir)
-    elif args.body == "box":
+    elif args.body in "box":
         raster = geom_rectangle(args.L, args.B, args.H, args.voxeldim, val=args.modulus)
 
     print("Created a image with dimension: {} - {} voxels".format(raster.shape,
@@ -914,7 +921,7 @@ if __name__ == "__main__":
     # If normal fill is set, change the raster accordingly
     if args.fill_normal:
         raster = fill_normal(raster, args.fill_mean, args.fill_sd, args.modulus)
-    elif args.fill_noise:
+    elif has_noise and args.fill_noise:
         raster = fill_noise(raster)
 
     # Get midplane images
